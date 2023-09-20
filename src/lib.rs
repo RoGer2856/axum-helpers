@@ -6,6 +6,7 @@ use std::{
     time::Duration,
 };
 
+use async_trait::async_trait;
 use axum::{
     extract::FromRequestParts,
     http::{Request, StatusCode},
@@ -13,7 +14,6 @@ use axum::{
 };
 use axum_extra::extract::{cookie::Cookie, CookieJar};
 use http_body::Body;
-use pin_project::pin_project;
 use tower::{Layer, Service};
 
 const ACCESS_TOKEN_COOKIE_NAME: &'static str = "access_token";
@@ -66,9 +66,15 @@ where
     }
 }
 
-pub trait AuthHandler<LoginInfoType: Clone + Send + Sync>: Sized + Clone + Send + Sync {
-    fn verify_access_token(&self, access_token: &str) -> Result<LoginInfoType, AuthError>;
-    fn update_access_token(&self, access_token: String) -> Result<(String, Duration), AuthError>;
+#[async_trait]
+pub trait AuthHandler<LoginInfoType: Clone + Send + Sync>:
+    Sized + Clone + Send + Sync + 'static
+{
+    async fn verify_access_token(&self, access_token: &str) -> Result<LoginInfoType, AuthError>;
+    async fn update_access_token(
+        &self,
+        access_token: String,
+    ) -> Result<(String, Duration), AuthError>;
 }
 
 pub fn is_cookie_expired_by_date(cookie: &Cookie) -> bool {
@@ -151,111 +157,78 @@ pub struct AuthMiddleware<
     auth_impl: AuthHandlerType,
 }
 
-#[pin_project]
-pub struct AuthResponseFuture<InnerFutureType, LoginInfoType, AuthHandlerType> {
-    _marker: PhantomData<LoginInfoType>,
-
-    #[pin]
-    inner_future: InnerFutureType,
-
-    auth_impl: AuthHandlerType,
-    access_token: Option<String>,
-}
-
-impl<InnerFutureType, ResponseType, ErrorType, LoginInfoType, AuthHandlerType> Future
-    for AuthResponseFuture<InnerFutureType, LoginInfoType, AuthHandlerType>
-where
-    InnerFutureType: Future<Output = Result<ResponseType, ErrorType>>,
-    ResponseType: IntoResponse,
-    LoginInfoType: Clone + Send + Sync + 'static,
-    AuthHandlerType: AuthHandler<LoginInfoType>,
-{
-    type Output = Result<Response, ErrorType>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.project();
-        match this.inner_future.poll(cx) {
-            Poll::Ready(next_response) => {
-                let response = match next_response {
-                    Ok(next_response) => {
-                        let cookie_jar = CookieJar::new();
-                        let cookie_jar = if let Some(access_token) = &this.access_token {
-                            if let Ok((access_token, expiration_time_delta)) =
-                                this.auth_impl.update_access_token(access_token.clone())
-                            {
-                                cookie_jar
-                                    .add(create_auth_cookie(access_token, expiration_time_delta))
-                            } else {
-                                cookie_jar
-                            }
-                        } else {
-                            cookie_jar
-                        };
-
-                        let mut response = next_response.into_response();
-                        response.headers_mut().extend(
-                            cookie_jar.into_response().headers().into_iter().map(
-                                |(header_name, header_value)| {
-                                    (header_name.clone(), header_value.clone())
-                                },
-                            ),
-                        );
-
-                        Ok(response)
-                    }
-                    Err(e) => Err(e),
-                };
-
-                Poll::Ready(response)
-            }
-            Poll::Pending => Poll::Pending,
-        }
-    }
-}
-
 impl<ServiceType, RequestBodyType, ResponseType, LoginInfoType, AuthHandlerType>
     Service<Request<RequestBodyType>>
     for AuthMiddleware<ServiceType, LoginInfoType, AuthHandlerType>
 where
     LoginInfoType: Clone + Send + Sync + 'static,
     AuthHandlerType: AuthHandler<LoginInfoType>,
-    ServiceType: Service<Request<RequestBodyType>>,
-    ServiceType::Future: Future<Output = Result<ResponseType, ServiceType::Error>>,
-    ResponseType: IntoResponse,
-    RequestBodyType: Body,
+    ServiceType: Service<Request<RequestBodyType>> + Clone + Send + 'static,
+    ServiceType::Future: Future<Output = Result<ResponseType, ServiceType::Error>> + Send,
+    ServiceType::Error: Send,
+    ResponseType: IntoResponse + Send,
+    RequestBodyType: Body + Send + 'static,
 {
     type Response = Response;
     type Error = ServiceType::Error;
-    type Future = AuthResponseFuture<ServiceType::Future, LoginInfoType, AuthHandlerType>;
+    type Future = Pin<Box<dyn Future<Output = Result<Response, ServiceType::Error>> + Send>>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.inner.poll_ready(cx)
     }
 
     fn call(&mut self, mut req: Request<RequestBodyType>) -> Self::Future {
-        let mut access_token = None;
-        let mut login_info = None;
-        let cookie_jar = CookieJar::from_headers(req.headers());
-        for cookie in cookie_jar.iter() {
-            if cookie.name() == ACCESS_TOKEN_COOKIE_NAME && !is_cookie_expired_by_date(&cookie) {
-                let at = cookie.value().to_string();
-                if let Ok(li) = self.auth_impl.verify_access_token(&at) {
-                    login_info = Some(li);
-                    access_token = Some(at);
+        let auth_impl = self.auth_impl.clone();
+        let mut inner = self.inner.clone();
+        Box::pin(async move {
+            let mut access_token = None;
+            let mut login_info = None;
+            let cookie_jar = CookieJar::from_headers(req.headers());
+            for cookie in cookie_jar.iter() {
+                if cookie.name() == ACCESS_TOKEN_COOKIE_NAME && !is_cookie_expired_by_date(&cookie)
+                {
+                    let at = cookie.value().to_string();
+                    if let Ok(li) = auth_impl.verify_access_token(&at).await {
+                        login_info = Some(li);
+                        access_token = Some(at);
+                    }
                 }
             }
-        }
 
-        if let Some(login_info) = login_info {
-            req.extensions_mut().insert(login_info);
-        }
+            if let Some(login_info) = login_info {
+                req.extensions_mut().insert(login_info);
+            }
 
-        AuthResponseFuture {
-            _marker: PhantomData::default(),
+            let next_response = inner.call(req).await;
 
-            inner_future: self.inner.call(req),
-            auth_impl: self.auth_impl.clone(),
-            access_token,
-        }
+            match next_response {
+                Ok(next_response) => {
+                    let cookie_jar = CookieJar::new();
+                    let cookie_jar = if let Some(access_token) = &access_token {
+                        if let Ok((access_token, expiration_time_delta)) =
+                            auth_impl.update_access_token(access_token.clone()).await
+                        {
+                            cookie_jar.add(create_auth_cookie(access_token, expiration_time_delta))
+                        } else {
+                            cookie_jar
+                        }
+                    } else {
+                        cookie_jar
+                    };
+
+                    let mut response = next_response.into_response();
+                    response.headers_mut().extend(
+                        cookie_jar.into_response().headers().into_iter().map(
+                            |(header_name, header_value)| {
+                                (header_name.clone(), header_value.clone())
+                            },
+                        ),
+                    );
+
+                    Ok(response)
+                }
+                Err(e) => Err(e),
+            }
+        })
     }
 }
