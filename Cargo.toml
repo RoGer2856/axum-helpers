@@ -1,5 +1,5 @@
 [package]
-name = "axum-auth"
+name = "axum-helpers"
 version = "0.1.0"
 edition = "2021"
 
@@ -9,6 +9,8 @@ edition = "2021"
 axum = "0.6"
 axum-extra = { version = "0.8", features = ["cookie"] }
 tower = "0.4"
+tokio = "1.32"
+log = "0.4"
 http-body = "0.4"
 time = "0.3"
 async-trait = "0.1"
