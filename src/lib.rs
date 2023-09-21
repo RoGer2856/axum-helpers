@@ -16,7 +16,7 @@ use axum_extra::extract::{cookie::Cookie, CookieJar};
 use http_body::Body;
 use tower::{Layer, Service};
 
-const ACCESS_TOKEN_COOKIE_NAME: &'static str = "access_token";
+const ACCESS_TOKEN_COOKIE_NAME: &str = "access_token";
 
 #[derive(Debug, Clone)]
 pub enum AuthError {
@@ -120,7 +120,7 @@ impl<LoginInfoType: Clone + Send + Sync + 'static, AuthHandlerType: AuthHandler<
 {
     pub fn new(auth_impl: AuthHandlerType) -> Self {
         Self {
-            _marker: PhantomData::default(),
+            _marker: PhantomData,
 
             auth_impl,
         }
@@ -137,7 +137,7 @@ impl<
 
     fn layer(&self, inner: ServiceType) -> Self::Service {
         AuthMiddleware {
-            _marker: PhantomData::default(),
+            _marker: PhantomData,
 
             inner,
             auth_impl: self.auth_impl.clone(),
@@ -185,8 +185,7 @@ where
             let mut login_info = None;
             let cookie_jar = CookieJar::from_headers(req.headers());
             for cookie in cookie_jar.iter() {
-                if cookie.name() == ACCESS_TOKEN_COOKIE_NAME && !is_cookie_expired_by_date(&cookie)
-                {
+                if cookie.name() == ACCESS_TOKEN_COOKIE_NAME && !is_cookie_expired_by_date(cookie) {
                     let at = cookie.value().to_string();
                     if let Ok(li) = auth_impl.verify_access_token(&at).await {
                         login_info = Some(li);
