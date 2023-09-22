@@ -10,10 +10,14 @@ use async_trait::async_trait;
 use axum::{
     extract::FromRequestParts,
     http::{Request, StatusCode},
-    response::{IntoResponse, Response},
+    response::{IntoResponse, IntoResponseParts, Response, ResponseParts},
 };
-use axum_extra::extract::{cookie::Cookie, CookieJar};
+use axum_extra::extract::{
+    cookie::{Cookie, SameSite},
+    CookieJar,
+};
 use http_body::Body;
+use time::OffsetDateTime;
 use tower::{Layer, Service};
 
 const ACCESS_TOKEN_COOKIE_NAME: &str = "access_token";
@@ -39,7 +43,7 @@ impl std::convert::From<AuthError> for StatusCode {
     }
 }
 
-pub struct LoginInfoExtractor<LoginInfoType>(pub LoginInfoType);
+pub struct LoginInfoExtractor<LoginInfoType: Clone + Send + Sync + 'static>(pub LoginInfoType);
 
 impl<StateType, LoginInfoType> FromRequestParts<StateType> for LoginInfoExtractor<LoginInfoType>
 where
@@ -86,22 +90,17 @@ pub fn is_cookie_expired_by_date(cookie: &Cookie) -> bool {
     false
 }
 
-pub fn create_auth_cookie<'a>(
+fn create_auth_cookie<'a>(
     access_token: impl Into<String>,
-    expiration_time_delta: Duration,
+    expires_at: OffsetDateTime,
+    path: impl Into<String>,
 ) -> Cookie<'a> {
     Cookie::build(ACCESS_TOKEN_COOKIE_NAME, access_token.into())
         .http_only(true)
         .secure(true)
-        .expires(time::OffsetDateTime::now_utc() + expiration_time_delta)
-        .finish()
-}
-
-pub fn create_expired_auth_cookie<'a>(access_token: impl Into<String>) -> Cookie<'a> {
-    Cookie::build(ACCESS_TOKEN_COOKIE_NAME, access_token.into())
-        .http_only(true)
-        .secure(true)
-        .expires(time::OffsetDateTime::UNIX_EPOCH)
+        .same_site(SameSite::Lax)
+        .expires(expires_at)
+        .path(path.into())
         .finish()
 }
 
@@ -190,6 +189,8 @@ where
                     if let Ok(li) = auth_impl.verify_access_token(&at).await {
                         login_info = Some(li);
                         access_token = Some(at);
+
+                        break;
                     }
                 }
             }
@@ -202,12 +203,26 @@ where
 
             match next_response {
                 Ok(next_response) => {
+                    let mut response = next_response.into_response();
+
                     let cookie_jar = CookieJar::new();
                     let cookie_jar = if let Some(access_token) = &access_token {
-                        if let Ok((access_token, expiration_time_delta)) =
+                        if let Some(_auth_logout_response) =
+                            response.extensions_mut().remove::<AuthLogoutResponse>()
+                        {
+                            cookie_jar.add(create_auth_cookie(
+                                access_token,
+                                time::OffsetDateTime::UNIX_EPOCH,
+                                "/",
+                            ))
+                        } else if let Ok((access_token, expiration_time_delta)) =
                             auth_impl.update_access_token(access_token.clone()).await
                         {
-                            cookie_jar.add(create_auth_cookie(access_token, expiration_time_delta))
+                            cookie_jar.add(create_auth_cookie(
+                                access_token,
+                                time::OffsetDateTime::now_utc() + expiration_time_delta,
+                                "/",
+                            ))
                         } else {
                             cookie_jar
                         }
@@ -215,7 +230,6 @@ where
                         cookie_jar
                     };
 
-                    let mut response = next_response.into_response();
                     response.headers_mut().extend(
                         cookie_jar.into_response().headers().into_iter().map(
                             |(header_name, header_value)| {
@@ -229,5 +243,56 @@ where
                 Err(e) => Err(e),
             }
         })
+    }
+}
+
+pub struct AuthLoginResponse {
+    access_token: String,
+    expires_at: OffsetDateTime,
+}
+
+impl AuthLoginResponse {
+    pub fn new(access_token: String, expiration_time_delta: Duration) -> Self {
+        Self {
+            access_token,
+            expires_at: OffsetDateTime::now_utc() + expiration_time_delta,
+        }
+    }
+}
+
+impl IntoResponseParts for AuthLoginResponse {
+    type Error = <CookieJar as IntoResponseParts>::Error;
+
+    fn into_response_parts(
+        self,
+        res: axum::response::ResponseParts,
+    ) -> Result<ResponseParts, Self::Error> {
+        let cookie = create_auth_cookie(self.access_token, self.expires_at, "/");
+
+        CookieJar::new().add(cookie).into_response_parts(res)
+    }
+}
+
+impl IntoResponse for AuthLoginResponse {
+    fn into_response(self) -> Response {
+        (self, ()).into_response()
+    }
+}
+
+pub struct AuthLogoutResponse;
+
+impl IntoResponseParts for AuthLogoutResponse {
+    type Error = ();
+
+    fn into_response_parts(self, mut res: ResponseParts) -> Result<ResponseParts, Self::Error> {
+        res.extensions_mut().insert(self);
+
+        Ok(res)
+    }
+}
+
+impl IntoResponse for AuthLogoutResponse {
+    fn into_response(self) -> Response {
+        (self, ()).into_response()
     }
 }
