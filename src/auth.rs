@@ -95,13 +95,13 @@ fn create_auth_cookie<'a>(
     expires_at: OffsetDateTime,
     path: impl Into<String>,
 ) -> Cookie<'a> {
-    Cookie::build(ACCESS_TOKEN_COOKIE_NAME, access_token.into())
+    Cookie::build((ACCESS_TOKEN_COOKIE_NAME, access_token.into()))
         .http_only(true)
         .secure(true)
         .same_site(SameSite::Lax)
         .expires(expires_at)
         .path(path.into())
-        .finish()
+        .build()
 }
 
 #[derive(Clone)]
@@ -279,6 +279,7 @@ impl IntoResponse for AuthLoginResponse {
     }
 }
 
+#[derive(Clone)]
 pub struct AuthLogoutResponse;
 
 impl IntoResponseParts for AuthLogoutResponse {

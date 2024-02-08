@@ -224,7 +224,7 @@ async fn main() {
 
     let mut app = AxumApp::new(AppState);
     for addr in cli.listener_address.to_socket_addrs().unwrap() {
-        app.run_server(addr);
+        let _ = app.run_server(addr).await;
     }
 
     app.join().await;

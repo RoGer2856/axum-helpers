@@ -5,6 +5,10 @@ use tokio::{sync::watch, task::JoinHandle};
 
 use crate::result_option_inspect::ResultInspector;
 
+pub enum RunServerError {
+    TcpBind(std::io::Error),
+}
+
 pub trait AxumAppState: Clone {
     fn routes(&self) -> Router;
 }
@@ -46,16 +50,18 @@ where
         Ok(TestServer::new(app.into_make_service())?)
     }
 
-    pub fn run_server(&mut self, listener_address: SocketAddr) {
+    pub async fn run_server(&mut self, listener_address: SocketAddr) -> Result<(), RunServerError> {
         let app = self.state.routes();
 
         let mut should_run_receiver = self.should_run_sender.subscribe();
 
         log::info!("listening on {}", listener_address);
+        let listener = tokio::net::TcpListener::bind(listener_address)
+            .await
+            .map_err(RunServerError::TcpBind)?;
 
         let joinhandle = tokio::spawn(async move {
-            let _ = axum::Server::bind(&listener_address)
-                .serve(app.into_make_service())
+            let _ = axum::serve(listener, app.into_make_service())
                 .with_graceful_shutdown(async move {
                     while should_run_receiver.changed().await.is_ok() {
                         if !*should_run_receiver.borrow() {
@@ -68,6 +74,8 @@ where
         });
 
         self.joinhandles.push(joinhandle);
+
+        Ok(())
     }
 
     pub async fn join(&mut self) {
