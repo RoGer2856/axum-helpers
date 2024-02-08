@@ -103,9 +103,7 @@ async fn index_page(login_info: Option<LoginInfoExtractor<LoginInfo>>) -> Html<S
                     <h1>Endpoints</h1>
                     <ul>
                         <li><b>get /</b>: returns this page</li>
-                        <li><b>get /auth</b>: returns a page only if the user is logged in</li>
                         <li><b>get /login</b>: returns a page where a user can log in</li>
-                        <li><b>get /login</b>: returns a page where an authenticated user can log out</li>
 
                         <li><b>post /api/login</b>: logs a user in</li>
                         <li><b>post /api/logout</b>: logs a user out</li>
@@ -119,7 +117,7 @@ async fn index_page(login_info: Option<LoginInfoExtractor<LoginInfo>>) -> Html<S
 async fn login_page(login_info: Option<LoginInfoExtractor<LoginInfo>>) -> Html<String> {
     let body_content = if login_info.is_some() {
         r#"
-            You are not logged in!
+            You are already logged in!
         "#
     } else {
         r#"
