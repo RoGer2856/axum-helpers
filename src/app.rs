@@ -3,8 +3,6 @@ use std::net::SocketAddr;
 use axum::Router;
 use tokio::{sync::watch, task::JoinHandle};
 
-use crate::result_option_inspect::ResultInspector;
-
 pub enum RunServerError {
     TcpBind(std::io::Error),
 }
