@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use axum::Router;
 use tokio::{sync::watch, task::JoinHandle};
 
+#[derive(Debug)]
 pub enum RunServerError {
     TcpBind(std::io::Error),
 }
