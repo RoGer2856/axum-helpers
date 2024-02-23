@@ -20,7 +20,7 @@ async fn get_index() -> &'static str {
 #[tokio::test]
 async fn get_index_page() {
     let app = AxumApp::new(AppState);
-    let server = app.run_test_server().unwrap();
+    let server = app.spawn_test_server().unwrap();
 
     let response = server.get("/").await;
 

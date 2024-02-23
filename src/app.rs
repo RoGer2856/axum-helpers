@@ -41,7 +41,7 @@ where
     }
 
     #[cfg(test)]
-    pub fn run_test_server(&self) -> Result<axum_test::TestServer, Box<dyn ::std::error::Error>> {
+    pub fn spawn_test_server(&self) -> Result<axum_test::TestServer, Box<dyn ::std::error::Error>> {
         use axum_test::TestServer;
 
         let app = self.state.routes();
@@ -49,7 +49,7 @@ where
         Ok(TestServer::new(app.into_make_service())?)
     }
 
-    pub async fn run_server(&mut self, listener_address: SocketAddr) -> Result<(), RunServerError> {
+    pub async fn spawn_server(&mut self, listener_address: SocketAddr) -> Result<(), RunServerError> {
         let app = self.state.routes();
 
         let mut should_run_receiver = self.should_run_sender.subscribe();
