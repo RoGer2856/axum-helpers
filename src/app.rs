@@ -49,7 +49,10 @@ where
         Ok(TestServer::new(app.into_make_service())?)
     }
 
-    pub async fn spawn_server(&mut self, listener_address: SocketAddr) -> Result<(), RunServerError> {
+    pub async fn spawn_server(
+        &mut self,
+        listener_address: SocketAddr,
+    ) -> Result<(), RunServerError> {
         let app = self.state.routes();
 
         let mut should_run_receiver = self.should_run_sender.subscribe();
