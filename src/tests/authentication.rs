@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use axum::{
@@ -7,7 +7,6 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use uuid::Uuid;
 
 use crate::{
     app::{AxumApp, AxumAppState},
@@ -16,33 +15,69 @@ use crate::{
         LoginInfoExtractor,
     },
 };
+use parking_lot::Mutex;
+use uuid::Uuid;
 
 const ACCESS_TOKEN_EXPIRATION_TIME_DURATION: Duration = Duration::from_secs(5 * 60 * 60 * 24);
 
 #[derive(Clone)]
-struct AppState;
+struct AppState {
+    logins: Arc<Mutex<BTreeMap<AccessToken, String>>>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
+struct AccessToken(pub String);
 
 impl AppState {
-    fn login(&self, _loginname: impl Into<String>, _password: impl Into<String>) -> LoginInfo {
-        LoginInfo {
-            access_token: Uuid::new_v4().as_hyphenated().to_string(),
+    fn new() -> Self {
+        Self {
+            logins: Arc::new(Mutex::new(BTreeMap::new())),
         }
+    }
+
+    fn login(
+        &mut self,
+        loginname: impl Into<String>,
+        _password: impl Into<String>,
+    ) -> (AccessToken, LoginInfo) {
+        let access_token = AccessToken(Uuid::new_v4().as_hyphenated().to_string());
+        let loginname = loginname.into();
+
+        self.logins
+            .lock()
+            .insert(access_token.clone(), loginname.clone());
+
+        (access_token, LoginInfo { loginname })
+    }
+
+    fn logout(&mut self, access_token: &str, login_info: &Arc<LoginInfo>) {
+        self.logins.lock().remove(&AccessToken(access_token.into()));
+
+        log::info!("User logged out, loginname = '{}'", login_info.loginname);
     }
 }
 
 #[async_trait]
 impl AuthHandler<LoginInfo> for AppState {
-    async fn verify_access_token(&self, access_token: &str) -> Result<LoginInfo, AuthError> {
-        Ok(LoginInfo {
-            access_token: access_token.to_string(),
-        })
+    async fn verify_access_token(&mut self, access_token: &str) -> Result<LoginInfo, AuthError> {
+        self.logins
+            .lock()
+            .get(&AccessToken(access_token.into()))
+            .map(|loginname| LoginInfo {
+                loginname: loginname.clone(),
+            })
+            .ok_or_else(|| AuthError::InvalidAccessToken)
     }
 
     async fn update_access_token(
-        &self,
-        access_token: String,
+        &mut self,
+        access_token: &str,
     ) -> Result<(String, Duration), AuthError> {
-        Ok((access_token, ACCESS_TOKEN_EXPIRATION_TIME_DURATION))
+        Ok((access_token.into(), ACCESS_TOKEN_EXPIRATION_TIME_DURATION))
+    }
+
+    async fn invalidate_access_token(&mut self, access_token: &str, login_info: &Arc<LoginInfo>) {
+        self.logout(access_token, login_info);
     }
 }
 
@@ -79,7 +114,7 @@ async fn get_hybrid(login_info: Option<LoginInfoExtractor<LoginInfo>>) -> &'stat
 
 #[derive(Clone)]
 struct LoginInfo {
-    access_token: String,
+    loginname: String,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -94,18 +129,16 @@ struct LoginResponse {
 }
 
 async fn api_login(
-    State(state): State<AppState>,
+    State(mut state): State<AppState>,
     Json(login_request): Json<LoginRequest>,
 ) -> Result<(StatusCode, AuthLoginResponse, Json<LoginResponse>), StatusCode> {
-    let access_token = state
-        .login(&login_request.loginname, login_request.password)
-        .access_token;
+    let (access_token, _login_info) = state.login(&login_request.loginname, login_request.password);
 
     log::info!("User logged in, loginname = '{}'", login_request.loginname);
 
     Ok((
         StatusCode::OK,
-        AuthLoginResponse::new(access_token, ACCESS_TOKEN_EXPIRATION_TIME_DURATION),
+        AuthLoginResponse::new(access_token.0, ACCESS_TOKEN_EXPIRATION_TIME_DURATION),
         Json(LoginResponse {
             loginname: login_request.loginname,
         }),
@@ -114,15 +147,13 @@ async fn api_login(
 
 async fn api_logout(
     LoginInfoExtractor(_login_info): LoginInfoExtractor<LoginInfo>,
-    State(_state): State<AppState>,
 ) -> Result<AuthLogoutResponse, StatusCode> {
-    log::info!("User logged out");
     Ok(AuthLogoutResponse)
 }
 
 #[tokio::test]
 async fn get_public_page() {
-    let app = AxumApp::new(AppState);
+    let app = AxumApp::new(AppState::new());
     let server = app.spawn_test_server().unwrap();
 
     let response = server.get("/public").await;
@@ -131,7 +162,7 @@ async fn get_public_page() {
 
 #[tokio::test]
 async fn get_private_page_unauthenticated() {
-    let app = AxumApp::new(AppState);
+    let app = AxumApp::new(AppState::new());
     let server = app.spawn_test_server().unwrap();
 
     let response = server.get("/private").await;
@@ -140,7 +171,7 @@ async fn get_private_page_unauthenticated() {
 
 #[tokio::test]
 async fn get_private_page_authenticated() {
-    let app = AxumApp::new(AppState);
+    let app = AxumApp::new(AppState::new());
     let mut server = app.spawn_test_server().unwrap();
     server.do_save_cookies();
 
@@ -158,7 +189,7 @@ async fn get_private_page_authenticated() {
 
 #[tokio::test]
 async fn get_hybrid_page_unauthenticated() {
-    let app = AxumApp::new(AppState);
+    let app = AxumApp::new(AppState::new());
     let server = app.spawn_test_server().unwrap();
 
     let response = server.get("/hybrid").await;
@@ -167,7 +198,7 @@ async fn get_hybrid_page_unauthenticated() {
 
 #[tokio::test]
 async fn get_hybrid_page_authenticated() {
-    let app = AxumApp::new(AppState);
+    let app = AxumApp::new(AppState::new());
     let mut server = app.spawn_test_server().unwrap();
     server.do_save_cookies();
 
@@ -185,7 +216,7 @@ async fn get_hybrid_page_authenticated() {
 
 #[tokio::test]
 async fn login_then_logout() {
-    let app = AxumApp::new(AppState);
+    let app = AxumApp::new(AppState::new());
     let mut server = app.spawn_test_server().unwrap();
     server.do_save_cookies();
 

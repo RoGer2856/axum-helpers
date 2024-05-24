@@ -1,4 +1,4 @@
-use std::{net::ToSocketAddrs, time::Duration};
+use std::{collections::BTreeMap, net::ToSocketAddrs, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use axum::{
@@ -16,6 +16,7 @@ use axum_helpers::{
     },
 };
 use clap::Parser;
+use parking_lot::Mutex;
 use tracing_subscriber::{prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt};
 use uuid::Uuid;
 
@@ -33,29 +34,63 @@ pub struct Cli {
 }
 
 #[derive(Clone)]
-struct AppState;
+struct AppState {
+    logins: Arc<Mutex<BTreeMap<AccessToken, String>>>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
+struct AccessToken(pub String);
 
 impl AppState {
-    fn login(&self, _loginname: impl Into<String>, _password: impl Into<String>) -> LoginInfo {
-        LoginInfo {
-            access_token: Uuid::new_v4().as_hyphenated().to_string(),
+    fn new() -> Self {
+        Self {
+            logins: Arc::new(Mutex::new(BTreeMap::new())),
         }
+    }
+
+    fn login(
+        &mut self,
+        loginname: impl Into<String>,
+        _password: impl Into<String>,
+    ) -> (AccessToken, LoginInfo) {
+        let access_token = AccessToken(Uuid::new_v4().as_hyphenated().to_string());
+        let loginname = loginname.into();
+
+        self.logins
+            .lock()
+            .insert(access_token.clone(), loginname.clone());
+
+        (access_token, LoginInfo { loginname })
+    }
+
+    fn logout(&mut self, access_token: &str, login_info: &Arc<LoginInfo>) {
+        self.logins.lock().remove(&AccessToken(access_token.into()));
+
+        log::info!("User logged out, loginname = '{}'", login_info.loginname);
     }
 }
 
 #[async_trait]
 impl AuthHandler<LoginInfo> for AppState {
-    async fn verify_access_token(&self, access_token: &str) -> Result<LoginInfo, AuthError> {
-        Ok(LoginInfo {
-            access_token: access_token.to_string(),
-        })
+    async fn verify_access_token(&mut self, access_token: &str) -> Result<LoginInfo, AuthError> {
+        self.logins
+            .lock()
+            .get(&AccessToken(access_token.into()))
+            .map(|loginname| LoginInfo {
+                loginname: loginname.clone(),
+            })
+            .ok_or_else(|| AuthError::InvalidAccessToken)
     }
 
     async fn update_access_token(
-        &self,
-        access_token: String,
+        &mut self,
+        access_token: &str,
     ) -> Result<(String, Duration), AuthError> {
-        Ok((access_token, ACCESS_TOKEN_EXPIRATION_TIME_DURATION))
+        Ok((access_token.into(), ACCESS_TOKEN_EXPIRATION_TIME_DURATION))
+    }
+
+    async fn invalidate_access_token(&mut self, access_token: &str, login_info: &Arc<LoginInfo>) {
+        self.logout(access_token, login_info);
     }
 }
 
@@ -168,7 +203,7 @@ async fn login_page(login_info: Option<LoginInfoExtractor<LoginInfo>>) -> Html<S
 
 #[derive(Clone)]
 struct LoginInfo {
-    access_token: String,
+    loginname: String,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -183,18 +218,16 @@ struct LoginResponse {
 }
 
 async fn api_login(
-    State(state): State<AppState>,
+    State(mut state): State<AppState>,
     Json(login_request): Json<LoginRequest>,
 ) -> Result<(StatusCode, AuthLoginResponse, Json<LoginResponse>), StatusCode> {
-    let access_token = state
-        .login(&login_request.loginname, login_request.password)
-        .access_token;
+    let (access_token, _login_info) = state.login(&login_request.loginname, login_request.password);
 
     log::info!("User logged in, loginname = '{}'", login_request.loginname);
 
     Ok((
         StatusCode::OK,
-        AuthLoginResponse::new(access_token, ACCESS_TOKEN_EXPIRATION_TIME_DURATION),
+        AuthLoginResponse::new(access_token.0, ACCESS_TOKEN_EXPIRATION_TIME_DURATION),
         Json(LoginResponse {
             loginname: login_request.loginname,
         }),
@@ -203,9 +236,7 @@ async fn api_login(
 
 async fn api_logout(
     LoginInfoExtractor(_login_info): LoginInfoExtractor<LoginInfo>,
-    State(_state): State<AppState>,
 ) -> Result<AuthLogoutResponse, StatusCode> {
-    log::info!("User logged out");
     Ok(AuthLogoutResponse)
 }
 
@@ -222,7 +253,7 @@ async fn main() {
 
     let cli = Cli::parse();
 
-    let mut app = AxumApp::new(AppState);
+    let mut app = AxumApp::new(AppState::new());
     for addr in cli.listener_address.to_socket_addrs().unwrap() {
         let _ = app.spawn_server(addr).await;
     }

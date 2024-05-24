@@ -2,6 +2,7 @@ use std::{
     future::Future,
     marker::PhantomData,
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
     time::Duration,
 };
@@ -43,7 +44,7 @@ impl std::convert::From<AuthError> for StatusCode {
     }
 }
 
-pub struct LoginInfoExtractor<LoginInfoType: Clone + Send + Sync + 'static>(pub LoginInfoType);
+pub struct LoginInfoExtractor<LoginInfoType: Clone + Send + Sync + 'static>(pub Arc<LoginInfoType>);
 
 impl<StateType, LoginInfoType> FromRequestParts<StateType> for LoginInfoExtractor<LoginInfoType>
 where
@@ -62,7 +63,7 @@ where
     {
         let login_info = parts
             .extensions
-            .get::<LoginInfoType>()
+            .get::<Arc<LoginInfoType>>()
             .map(|login_info| LoginInfoExtractor(login_info.clone()))
             .ok_or(StatusCode::UNAUTHORIZED);
 
@@ -74,11 +75,17 @@ where
 pub trait AuthHandler<LoginInfoType: Clone + Send + Sync>:
     Sized + Clone + Send + Sync + 'static
 {
-    async fn verify_access_token(&self, access_token: &str) -> Result<LoginInfoType, AuthError>;
+    async fn verify_access_token(&mut self, access_token: &str)
+        -> Result<LoginInfoType, AuthError>;
     async fn update_access_token(
-        &self,
-        access_token: String,
+        &mut self,
+        access_token: &str,
     ) -> Result<(String, Duration), AuthError>;
+    async fn invalidate_access_token(
+        &mut self,
+        access_token: &str,
+        login_info: &Arc<LoginInfoType>,
+    );
 }
 
 pub fn is_cookie_expired_by_date(cookie: &Cookie) -> bool {
@@ -177,26 +184,24 @@ where
     }
 
     fn call(&mut self, mut req: Request<RequestBodyType>) -> Self::Future {
-        let auth_impl = self.auth_impl.clone();
+        let mut auth_impl = self.auth_impl.clone();
         let mut inner = self.inner.clone();
         Box::pin(async move {
-            let mut access_token = None;
-            let mut login_info = None;
+            let mut access_token_login_info_pair = None;
             let cookie_jar = CookieJar::from_headers(req.headers());
             for cookie in cookie_jar.iter() {
                 if cookie.name() == ACCESS_TOKEN_COOKIE_NAME && !is_cookie_expired_by_date(cookie) {
                     let at = cookie.value().to_string();
                     if let Ok(li) = auth_impl.verify_access_token(&at).await {
-                        login_info = Some(li);
-                        access_token = Some(at);
+                        access_token_login_info_pair = Some((at, Arc::new(li)));
 
                         break;
                     }
                 }
             }
 
-            if let Some(login_info) = login_info {
-                req.extensions_mut().insert(login_info);
+            if let Some((_at, login_info)) = &access_token_login_info_pair {
+                req.extensions_mut().insert(login_info.clone());
             }
 
             let next_response = inner.call(req).await;
@@ -206,29 +211,33 @@ where
                     let mut response = next_response.into_response();
 
                     let cookie_jar = CookieJar::new();
-                    let cookie_jar = if let Some(access_token) = &access_token {
-                        if let Some(_auth_logout_response) =
-                            response.extensions_mut().remove::<AuthLogoutResponse>()
-                        {
-                            cookie_jar.add(create_auth_cookie(
-                                access_token,
-                                time::OffsetDateTime::UNIX_EPOCH,
-                                "/",
-                            ))
-                        } else if let Ok((access_token, expiration_time_delta)) =
-                            auth_impl.update_access_token(access_token.clone()).await
-                        {
-                            cookie_jar.add(create_auth_cookie(
-                                access_token,
-                                time::OffsetDateTime::now_utc() + expiration_time_delta,
-                                "/",
-                            ))
+                    let cookie_jar =
+                        if let Some((access_token, login_info)) = &access_token_login_info_pair {
+                            if let Some(_auth_logout_response) =
+                                response.extensions_mut().remove::<AuthLogoutResponse>()
+                            {
+                                auth_impl
+                                    .invalidate_access_token(access_token, login_info)
+                                    .await;
+                                cookie_jar.add(create_auth_cookie(
+                                    access_token,
+                                    time::OffsetDateTime::UNIX_EPOCH,
+                                    "/",
+                                ))
+                            } else if let Ok((access_token, expiration_time_delta)) =
+                                auth_impl.update_access_token(&access_token).await
+                            {
+                                cookie_jar.add(create_auth_cookie(
+                                    access_token,
+                                    time::OffsetDateTime::now_utc() + expiration_time_delta,
+                                    "/",
+                                ))
+                            } else {
+                                cookie_jar
+                            }
                         } else {
                             cookie_jar
-                        }
-                    } else {
-                        cookie_jar
-                    };
+                        };
 
                     response.headers_mut().extend(
                         cookie_jar.into_response().headers().into_iter().map(
