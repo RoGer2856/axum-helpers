@@ -157,6 +157,7 @@ async fn get_public_page() {
     let server = app.spawn_test_server().unwrap();
 
     let response = server.get("/public").await;
+    response.assert_status_ok();
     response.assert_text("public");
 }
 
@@ -193,6 +194,7 @@ async fn get_hybrid_page_unauthenticated() {
     let server = app.spawn_test_server().unwrap();
 
     let response = server.get("/hybrid").await;
+    response.assert_status_ok();
     response.assert_text("unauthenticated");
 }
 
@@ -211,6 +213,7 @@ async fn get_hybrid_page_authenticated() {
         .await;
 
     let response = server.get("/hybrid").await;
+    response.assert_status_ok();
     response.assert_text("authenticated");
 }
 
@@ -221,6 +224,7 @@ async fn login_then_logout() {
     server.do_save_cookies();
 
     let response = server.get("/hybrid").await;
+    response.assert_status_ok();
     response.assert_text("unauthenticated");
 
     server
@@ -232,10 +236,12 @@ async fn login_then_logout() {
         .await;
 
     let response = server.get("/hybrid").await;
+    response.assert_status_ok();
     response.assert_text("authenticated");
 
     server.post("/api/logout").await;
 
     let response = server.get("/hybrid").await;
+    response.assert_status_ok();
     response.assert_text("unauthenticated");
 }
