@@ -225,7 +225,7 @@ where
                                     "/",
                                 ))
                             } else if let Ok((access_token, expiration_time_delta)) =
-                                auth_impl.update_access_token(&access_token).await
+                                auth_impl.update_access_token(access_token).await
                             {
                                 cookie_jar.add(create_auth_cookie(
                                     access_token,

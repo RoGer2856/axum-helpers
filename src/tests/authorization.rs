@@ -1,9 +1,10 @@
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, future::Future, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use axum::{
     extract::State,
     http::StatusCode,
+    response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
@@ -43,7 +44,13 @@ impl AppState {
         let access_token = AccessToken(Uuid::new_v4().as_hyphenated().to_string());
         let loginname = loginname.into();
 
-        let login_info = LoginInfo { loginname };
+        let role = match loginname.as_str() {
+            "admin" => "admin",
+            _ => "regular",
+        }
+        .into();
+
+        let login_info = LoginInfo { loginname, role };
 
         self.logins
             .lock()
@@ -84,9 +91,7 @@ impl AuthHandler<LoginInfo> for AppState {
 impl AxumAppState for AppState {
     fn routes(&self) -> Router {
         Router::new()
-            .route("/public", get(get_public))
-            .route("/private", get(get_private))
-            .route("/hybrid", get(get_hybrid))
+            .route("/admin-page", get(get_admin_page))
             .route("/api/login", post(api_login))
             .route("/api/logout", post(api_logout))
             .route_layer(AuthLayer::new(self.clone()))
@@ -94,27 +99,29 @@ impl AxumAppState for AppState {
     }
 }
 
-async fn get_public() -> &'static str {
-    "public"
+async fn check_required_role<FutureType: Future<Output = impl IntoResponse>>(
+    required_role: &str,
+    f: fn(LoginInfoExtractor<LoginInfo>) -> FutureType,
+    LoginInfoExtractor(login_info): LoginInfoExtractor<LoginInfo>,
+) -> Result<impl IntoResponse, StatusCode> {
+    if login_info.role == required_role {
+        Ok(f(LoginInfoExtractor(login_info)).await)
+    } else {
+        Err(StatusCode::FORBIDDEN)
+    }
 }
 
-async fn get_private(
+#[fn_decorator::use_decorator(check_required_role("admin"), override_return_type = impl IntoResponse)]
+async fn get_admin_page(
     LoginInfoExtractor(_login_info): LoginInfoExtractor<LoginInfo>,
 ) -> &'static str {
-    "private"
-}
-
-async fn get_hybrid(login_info: Option<LoginInfoExtractor<LoginInfo>>) -> &'static str {
-    if login_info.is_some() {
-        "authenticated"
-    } else {
-        "unauthenticated"
-    }
+    "admin-page"
 }
 
 #[derive(Clone)]
 struct LoginInfo {
     loginname: String,
+    role: String,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -152,26 +159,7 @@ async fn api_logout(
 }
 
 #[tokio::test]
-async fn get_public_page() {
-    let app = AxumApp::new(AppState::new());
-    let server = app.spawn_test_server().unwrap();
-
-    let response = server.get("/public").await;
-    response.assert_status_ok();
-    response.assert_text("public");
-}
-
-#[tokio::test]
-async fn get_private_page_unauthenticated() {
-    let app = AxumApp::new(AppState::new());
-    let server = app.spawn_test_server().unwrap();
-
-    let response = server.get("/private").await;
-    response.assert_status_unauthorized();
-}
-
-#[tokio::test]
-async fn get_private_page_authenticated() {
+async fn get_page_with_access_policy() {
     let app = AxumApp::new(AppState::new());
     let mut server = app.spawn_test_server().unwrap();
     server.do_save_cookies();
@@ -179,27 +167,18 @@ async fn get_private_page_authenticated() {
     server
         .post("/api/login")
         .json(&LoginRequest {
-            loginname: "loginname".into(),
+            loginname: "admin".into(),
             password: "password".into(),
         })
         .await;
 
-    let response = server.get("/private").await;
-    response.assert_text("private");
-}
-
-#[tokio::test]
-async fn get_hybrid_page_unauthenticated() {
-    let app = AxumApp::new(AppState::new());
-    let server = app.spawn_test_server().unwrap();
-
-    let response = server.get("/hybrid").await;
+    let response = server.get("/admin-page").await;
     response.assert_status_ok();
-    response.assert_text("unauthenticated");
+    response.assert_text("admin-page");
 }
 
 #[tokio::test]
-async fn get_hybrid_page_authenticated() {
+async fn get_page_with_incorrect_access_policy() {
     let app = AxumApp::new(AppState::new());
     let mut server = app.spawn_test_server().unwrap();
     server.do_save_cookies();
@@ -207,41 +186,11 @@ async fn get_hybrid_page_authenticated() {
     server
         .post("/api/login")
         .json(&LoginRequest {
-            loginname: "loginname".into(),
+            loginname: "roger".into(),
             password: "password".into(),
         })
         .await;
 
-    let response = server.get("/hybrid").await;
-    response.assert_status_ok();
-    response.assert_text("authenticated");
-}
-
-#[tokio::test]
-async fn login_then_logout() {
-    let app = AxumApp::new(AppState::new());
-    let mut server = app.spawn_test_server().unwrap();
-    server.do_save_cookies();
-
-    let response = server.get("/hybrid").await;
-    response.assert_status_ok();
-    response.assert_text("unauthenticated");
-
-    server
-        .post("/api/login")
-        .json(&LoginRequest {
-            loginname: "loginname".into(),
-            password: "password".into(),
-        })
-        .await;
-
-    let response = server.get("/hybrid").await;
-    response.assert_status_ok();
-    response.assert_text("authenticated");
-
-    server.post("/api/logout").await;
-
-    let response = server.get("/hybrid").await;
-    response.assert_status_ok();
-    response.assert_text("unauthenticated");
+    let response = server.get("/admin-page").await;
+    response.assert_status_forbidden();
 }
