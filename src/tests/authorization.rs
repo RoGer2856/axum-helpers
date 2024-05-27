@@ -101,7 +101,7 @@ impl AxumAppState for AppState {
 
 async fn check_required_role<FutureType: Future<Output = impl IntoResponse>>(
     required_role: &str,
-    f: fn(LoginInfoExtractor<LoginInfo>) -> FutureType,
+    f: impl FnOnce(LoginInfoExtractor<LoginInfo>) -> FutureType,
     LoginInfoExtractor(login_info): LoginInfoExtractor<LoginInfo>,
 ) -> Result<impl IntoResponse, StatusCode> {
     if login_info.role == required_role {
@@ -111,10 +111,8 @@ async fn check_required_role<FutureType: Future<Output = impl IntoResponse>>(
     }
 }
 
-#[fn_decorator::use_decorator(check_required_role("admin"), override_return_type = impl IntoResponse)]
-async fn get_admin_page(
-    LoginInfoExtractor(_login_info): LoginInfoExtractor<LoginInfo>,
-) -> &'static str {
+#[fn_decorator::use_decorator(check_required_role("admin"), override_return_type = impl IntoResponse, exact_parameters = [_login_info])]
+async fn get_admin_page(_login_info: LoginInfoExtractor<LoginInfo>) -> &'static str {
     "admin-page"
 }
 

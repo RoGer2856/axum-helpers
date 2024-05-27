@@ -1,10 +1,10 @@
-use std::{collections::BTreeMap, net::ToSocketAddrs, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, future::Future, net::ToSocketAddrs, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use axum::{
     extract::State,
     http::StatusCode,
-    response::Html,
+    response::{Html, IntoResponse},
     routing::{get, post},
     Json, Router,
 };
@@ -17,6 +17,7 @@ use axum_helpers::{
 };
 use clap::Parser;
 use parking_lot::Mutex;
+use serde_json::json;
 use tracing_subscriber::{prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt};
 use uuid::Uuid;
 
@@ -35,7 +36,7 @@ pub struct Cli {
 
 #[derive(Clone)]
 struct AppState {
-    logins: Arc<Mutex<BTreeMap<AccessToken, String>>>,
+    logins: Arc<Mutex<BTreeMap<AccessToken, LoginInfo>>>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -56,11 +57,19 @@ impl AppState {
         let access_token = AccessToken(Uuid::new_v4().as_hyphenated().to_string());
         let loginname = loginname.into();
 
+        let role = match loginname.as_str() {
+            "admin" => "admin",
+            _ => "regular",
+        }
+        .into();
+
+        let login_info = LoginInfo { loginname, role };
+
         self.logins
             .lock()
-            .insert(access_token.clone(), loginname.clone());
+            .insert(access_token.clone(), login_info.clone());
 
-        (access_token, LoginInfo { loginname })
+        (access_token, login_info)
     }
 
     fn logout(&mut self, access_token: &str, login_info: &Arc<LoginInfo>) {
@@ -76,9 +85,7 @@ impl AuthHandler<LoginInfo> for AppState {
         self.logins
             .lock()
             .get(&AccessToken(access_token.into()))
-            .map(|loginname| LoginInfo {
-                loginname: loginname.clone(),
-            })
+            .cloned()
             .ok_or_else(|| AuthError::InvalidAccessToken)
     }
 
@@ -101,8 +108,21 @@ impl AxumAppState for AppState {
             .route("/login", get(login_page))
             .route("/api/login", post(api_login))
             .route("/api/logout", post(api_logout))
+            .route("/api/logged-in-users", get(api_get_logged_in_users))
             .route_layer(AuthLayer::new(self.clone()))
             .with_state(self.clone())
+    }
+}
+
+async fn check_required_role<FutureType: Future<Output = impl IntoResponse>>(
+    required_role: &str,
+    f: impl FnOnce(LoginInfoExtractor<LoginInfo>) -> FutureType,
+    LoginInfoExtractor(login_info): LoginInfoExtractor<LoginInfo>,
+) -> Result<impl IntoResponse, StatusCode> {
+    if login_info.role == required_role {
+        Ok(f(LoginInfoExtractor(login_info)).await)
+    } else {
+        Err(StatusCode::FORBIDDEN)
     }
 }
 
@@ -201,9 +221,10 @@ async fn login_page(login_info: Option<LoginInfoExtractor<LoginInfo>>) -> Html<S
     ))
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize)]
 struct LoginInfo {
     loginname: String,
+    role: String,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -238,6 +259,23 @@ async fn api_logout(
     LoginInfoExtractor(_login_info): LoginInfoExtractor<LoginInfo>,
 ) -> Result<AuthLogoutResponse, StatusCode> {
     Ok(AuthLogoutResponse)
+}
+
+#[fn_decorator::use_decorator(check_required_role("admin"), override_return_type = impl IntoResponse, exact_parameters = [_login_info])]
+async fn api_get_logged_in_users(
+    _login_info: LoginInfoExtractor<LoginInfo>,
+    state: State<AppState>,
+) -> Json<serde_json::Value> {
+    let login_infos = state
+        .logins
+        .lock()
+        .iter()
+        .map(|(_access_token, login_info)| login_info.clone())
+        .collect::<Vec<_>>();
+
+    Json(json!({
+        "login_infos": login_infos
+    }))
 }
 
 #[tokio::main]
