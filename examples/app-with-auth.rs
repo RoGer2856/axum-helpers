@@ -92,6 +92,7 @@ impl AuthHandler<LoginInfo> for AppState {
     async fn update_access_token(
         &mut self,
         access_token: &str,
+        _login_info: &Arc<LoginInfo>,
     ) -> Result<(String, Duration), AuthError> {
         Ok((access_token.into(), ACCESS_TOKEN_EXPIRATION_TIME_DURATION))
     }

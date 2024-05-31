@@ -80,6 +80,7 @@ pub trait AuthHandler<LoginInfoType: Clone + Send + Sync>:
     async fn update_access_token(
         &mut self,
         access_token: &str,
+        login_info: &Arc<LoginInfoType>,
     ) -> Result<(String, Duration), AuthError>;
     async fn invalidate_access_token(
         &mut self,
@@ -224,8 +225,9 @@ where
                                     time::OffsetDateTime::UNIX_EPOCH,
                                     "/",
                                 ))
-                            } else if let Ok((access_token, expiration_time_delta)) =
-                                auth_impl.update_access_token(access_token).await
+                            } else if let Ok((access_token, expiration_time_delta)) = auth_impl
+                                .update_access_token(access_token, login_info)
+                                .await
                             {
                                 cookie_jar.add(create_auth_cookie(
                                     access_token,
