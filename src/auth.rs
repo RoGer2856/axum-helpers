@@ -106,7 +106,7 @@ fn create_auth_cookie<'a>(
     Cookie::build((ACCESS_TOKEN_COOKIE_NAME, access_token.into()))
         .http_only(true)
         .secure(true)
-        .same_site(SameSite::Lax)
+        .same_site(SameSite::Strict)
         .expires(expires_at)
         .path(path.into())
         .build()
