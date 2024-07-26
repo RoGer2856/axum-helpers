@@ -4,14 +4,11 @@ use std::{
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
-    time::Duration,
 };
 
-use async_trait::async_trait;
 use axum::{
-    extract::FromRequestParts,
-    http::{Request, StatusCode},
-    response::{IntoResponse, IntoResponseParts, Response, ResponseParts},
+    extract::Request,
+    response::{IntoResponse, Response},
 };
 use axum_extra::extract::{
     cookie::{Cookie, SameSite},
@@ -21,73 +18,9 @@ use http_body::Body;
 use time::OffsetDateTime;
 use tower::{Layer, Service};
 
+use super::{AuthHandler, AuthLogoutResponse};
+
 const ACCESS_TOKEN_COOKIE_NAME: &str = "access_token";
-
-#[derive(Debug, Clone)]
-pub enum AuthError {
-    Internal,
-    NoSuchUser,
-    InvalidPassword,
-    InvalidAccessToken,
-    UserNotLoggedIn,
-}
-
-impl std::convert::From<AuthError> for StatusCode {
-    fn from(value: AuthError) -> Self {
-        match value {
-            AuthError::Internal => StatusCode::INTERNAL_SERVER_ERROR,
-            AuthError::InvalidPassword => StatusCode::BAD_REQUEST,
-            AuthError::NoSuchUser => StatusCode::BAD_REQUEST,
-            AuthError::InvalidAccessToken => StatusCode::BAD_REQUEST,
-            AuthError::UserNotLoggedIn => StatusCode::BAD_REQUEST,
-        }
-    }
-}
-
-pub struct LoginInfoExtractor<LoginInfoType: Clone + Send + Sync + 'static>(pub Arc<LoginInfoType>);
-
-impl<StateType, LoginInfoType> FromRequestParts<StateType> for LoginInfoExtractor<LoginInfoType>
-where
-    LoginInfoType: Clone + Send + Sync + 'static,
-{
-    type Rejection = StatusCode;
-
-    fn from_request_parts<'life0, 'life1, 'async_trait>(
-        parts: &'life0 mut axum::http::request::Parts,
-        _state: &'life1 StateType,
-    ) -> Pin<Box<dyn Future<Output = Result<Self, Self::Rejection>> + Send + 'async_trait>>
-    where
-        'life0: 'async_trait,
-        'life1: 'async_trait,
-        Self: 'async_trait,
-    {
-        let login_info = parts
-            .extensions
-            .get::<Arc<LoginInfoType>>()
-            .map(|login_info| LoginInfoExtractor(login_info.clone()))
-            .ok_or(StatusCode::UNAUTHORIZED);
-
-        Box::pin(async move { login_info })
-    }
-}
-
-#[async_trait]
-pub trait AuthHandler<LoginInfoType: Clone + Send + Sync>:
-    Sized + Clone + Send + Sync + 'static
-{
-    async fn verify_access_token(&mut self, access_token: &str)
-        -> Result<LoginInfoType, AuthError>;
-    async fn update_access_token(
-        &mut self,
-        access_token: &str,
-        login_info: &Arc<LoginInfoType>,
-    ) -> Result<(String, Duration), AuthError>;
-    async fn invalidate_access_token(
-        &mut self,
-        access_token: &str,
-        login_info: &Arc<LoginInfoType>,
-    );
-}
 
 pub fn is_cookie_expired_by_date(cookie: &Cookie) -> bool {
     if let Some(date_time) = cookie.expires_datetime() {
@@ -98,7 +31,7 @@ pub fn is_cookie_expired_by_date(cookie: &Cookie) -> bool {
     false
 }
 
-fn create_auth_cookie<'a>(
+pub(crate) fn create_auth_cookie<'a>(
     access_token: impl Into<String>,
     expires_at: OffsetDateTime,
     path: impl Into<String>,
@@ -254,57 +187,5 @@ where
                 Err(e) => Err(e),
             }
         })
-    }
-}
-
-pub struct AuthLoginResponse {
-    access_token: String,
-    expires_at: OffsetDateTime,
-}
-
-impl AuthLoginResponse {
-    pub fn new(access_token: String, expiration_time_delta: Duration) -> Self {
-        Self {
-            access_token,
-            expires_at: OffsetDateTime::now_utc() + expiration_time_delta,
-        }
-    }
-}
-
-impl IntoResponseParts for AuthLoginResponse {
-    type Error = <CookieJar as IntoResponseParts>::Error;
-
-    fn into_response_parts(
-        self,
-        res: axum::response::ResponseParts,
-    ) -> Result<ResponseParts, Self::Error> {
-        let cookie = create_auth_cookie(self.access_token, self.expires_at, "/");
-
-        CookieJar::new().add(cookie).into_response_parts(res)
-    }
-}
-
-impl IntoResponse for AuthLoginResponse {
-    fn into_response(self) -> Response {
-        (self, ()).into_response()
-    }
-}
-
-#[derive(Clone)]
-pub struct AuthLogoutResponse;
-
-impl IntoResponseParts for AuthLogoutResponse {
-    type Error = ();
-
-    fn into_response_parts(self, mut res: ResponseParts) -> Result<ResponseParts, Self::Error> {
-        res.extensions_mut().insert(self);
-
-        Ok(res)
-    }
-}
-
-impl IntoResponse for AuthLogoutResponse {
-    fn into_response(self) -> Response {
-        (self, ()).into_response()
     }
 }
