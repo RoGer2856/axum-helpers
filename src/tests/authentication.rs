@@ -11,7 +11,7 @@ use axum::{
 use crate::{
     app::{AxumApp, AxumAppState},
     auth::{
-        AuthError, AuthHandler, AuthLayer, AuthLoginResponse, AuthLogoutResponse,
+        AccessTokenInfo, AuthError, AuthHandler, AuthLayer, AuthLoginResponse, AuthLogoutResponse,
         LoginInfoExtractor,
     },
 };
@@ -20,13 +20,13 @@ use uuid::Uuid;
 
 const ACCESS_TOKEN_EXPIRATION_TIME_DURATION: Duration = Duration::from_secs(5 * 60 * 60 * 24);
 
+#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
+struct AccessToken(pub String);
+
 #[derive(Clone)]
 struct AppState {
     logins: Arc<Mutex<BTreeMap<AccessToken, LoginInfo>>>,
 }
-
-#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-struct AccessToken(pub String);
 
 impl AppState {
     fn new() -> Self {
@@ -39,17 +39,22 @@ impl AppState {
         &mut self,
         loginname: impl Into<String>,
         _password: impl Into<String>,
-    ) -> (AccessToken, LoginInfo) {
-        let access_token = AccessToken(Uuid::new_v4().as_hyphenated().to_string());
+    ) -> (AccessTokenInfo, LoginInfo) {
+        let access_token_info = AccessTokenInfo::with_time_delta(
+            Uuid::new_v4().as_hyphenated().to_string(),
+            ACCESS_TOKEN_EXPIRATION_TIME_DURATION,
+            None,
+        );
         let loginname = loginname.into();
 
         let login_info = LoginInfo { loginname };
 
-        self.logins
-            .lock()
-            .insert(access_token.clone(), login_info.clone());
+        self.logins.lock().insert(
+            AccessToken(access_token_info.token().into()),
+            login_info.clone(),
+        );
 
-        (access_token, login_info)
+        (access_token_info, login_info)
     }
 
     fn logout(&mut self, access_token: &str, login_info: &Arc<LoginInfo>) {
@@ -139,7 +144,7 @@ async fn api_login(
 
     Ok((
         StatusCode::OK,
-        AuthLoginResponse::new(access_token.0, ACCESS_TOKEN_EXPIRATION_TIME_DURATION),
+        AuthLoginResponse::new(access_token),
         Json(LoginResponse {
             loginname: login_request.loginname,
         }),

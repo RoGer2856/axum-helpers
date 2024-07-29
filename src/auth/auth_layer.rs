@@ -31,7 +31,7 @@ pub fn is_cookie_expired_by_date(cookie: &Cookie) -> bool {
     false
 }
 
-pub(crate) fn create_auth_cookie<'a>(
+pub(super) fn create_auth_cookie<'a>(
     access_token: impl Into<String>,
     expires_at: OffsetDateTime,
     path: impl Into<String>,
