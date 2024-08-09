@@ -10,10 +10,7 @@ use axum::{
 };
 use axum_helpers::{
     app::{AxumApp, AxumAppState},
-    auth::{
-        AccessTokenInfo, AuthError, AuthHandler, AuthLayer, AuthLoginResponse, AuthLogoutResponse,
-        LoginInfoExtractor,
-    },
+    auth::{AccessTokenResponse, AuthHandler, AuthLayer, AuthLogoutResponse, LoginInfoExtractor},
 };
 use clap::Parser;
 use parking_lot::Mutex;
@@ -53,8 +50,8 @@ impl AppState {
         &mut self,
         loginname: impl Into<String>,
         _password: impl Into<String>,
-    ) -> (AccessTokenInfo, LoginInfo) {
-        let access_token_info = AccessTokenInfo::with_time_delta(
+    ) -> Option<(AccessTokenResponse, LoginInfo)> {
+        let access_token_response = AccessTokenResponse::with_time_delta(
             Uuid::new_v4().as_hyphenated().to_string(),
             ACCESS_TOKEN_EXPIRATION_TIME_DURATION,
             None,
@@ -70,14 +67,14 @@ impl AppState {
         let login_info = LoginInfo { loginname, role };
 
         self.logins.lock().insert(
-            AccessToken(access_token_info.token().into()),
+            AccessToken(access_token_response.token().into()),
             login_info.clone(),
         );
 
-        (access_token_info, login_info)
+        Some((access_token_response, login_info))
     }
 
-    fn logout(&mut self, access_token: &str, login_info: &Arc<LoginInfo>) {
+    fn logout(&mut self, access_token: impl Into<String>, login_info: &Arc<LoginInfo>) {
         self.logins.lock().remove(&AccessToken(access_token.into()));
 
         log::info!("User logged out, loginname = '{}'", login_info.loginname);
@@ -86,25 +83,31 @@ impl AppState {
 
 #[async_trait]
 impl AuthHandler<LoginInfo> for AppState {
-    async fn verify_access_token(&mut self, access_token: &str) -> Result<LoginInfo, AuthError> {
+    async fn verify_access_token(&mut self, access_token: &str) -> Result<LoginInfo, StatusCode> {
         self.logins
             .lock()
             .get(&AccessToken(access_token.into()))
             .cloned()
-            .ok_or_else(|| AuthError::InvalidAccessToken)
+            .ok_or_else(|| StatusCode::BAD_REQUEST)
     }
 
     async fn update_access_token(
         &mut self,
         access_token: &str,
         _login_info: &Arc<LoginInfo>,
-    ) -> Result<(String, Duration), AuthError> {
-        Ok((access_token.into(), ACCESS_TOKEN_EXPIRATION_TIME_DURATION))
+    ) -> Option<(String, Duration)> {
+        Some((access_token.into(), ACCESS_TOKEN_EXPIRATION_TIME_DURATION))
     }
 
-    async fn invalidate_access_token(&mut self, access_token: &str, login_info: &Arc<LoginInfo>) {
+    async fn revoke_access_token(&mut self, access_token: &str, login_info: &Arc<LoginInfo>) {
         self.logout(access_token, login_info);
     }
+
+    async fn verify_refresh_token(&mut self, _refresh_token: &str) -> Result<(), StatusCode> {
+        Err(StatusCode::INTERNAL_SERVER_ERROR)
+    }
+
+    async fn revoke_refresh_token(&mut self, _refresh_token: &str) {}
 }
 
 impl AxumAppState for AppState {
@@ -247,15 +250,16 @@ struct LoginResponse {
 async fn api_login(
     State(mut state): State<AppState>,
     Json(login_request): Json<LoginRequest>,
-) -> Result<(StatusCode, AuthLoginResponse, Json<LoginResponse>), StatusCode> {
-    let (access_token_info, _login_info) =
-        state.login(&login_request.loginname, login_request.password);
+) -> Result<(StatusCode, AccessTokenResponse, Json<LoginResponse>), StatusCode> {
+    let (access_token_response, _login_info) = state
+        .login(&login_request.loginname, login_request.password)
+        .ok_or_else(|| StatusCode::BAD_REQUEST)?;
 
     log::info!("User logged in, loginname = '{}'", login_request.loginname);
 
     Ok((
         StatusCode::OK,
-        AuthLoginResponse::new(access_token_info),
+        access_token_response,
         Json(LoginResponse {
             loginname: login_request.loginname,
         }),
@@ -265,7 +269,7 @@ async fn api_login(
 async fn api_logout(
     LoginInfoExtractor(_login_info): LoginInfoExtractor<LoginInfo>,
 ) -> Result<AuthLogoutResponse, StatusCode> {
-    Ok(AuthLogoutResponse)
+    Ok(AuthLogoutResponse::new(Some("/"), Some("/")))
 }
 
 #[fn_decorator::use_decorator(check_required_role("admin"), override_return_type = impl IntoResponse, exact_parameters = [_login_info])]

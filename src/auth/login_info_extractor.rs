@@ -2,6 +2,8 @@ use std::{future::Future, pin::Pin, sync::Arc};
 
 use axum::{extract::FromRequestParts, http::StatusCode};
 
+use super::auth_layer::AccessTokenVerificationResultExtension;
+
 pub struct LoginInfoExtractor<LoginInfoType: Clone + Send + Sync + 'static>(pub Arc<LoginInfoType>);
 
 impl<StateType, LoginInfoType> FromRequestParts<StateType> for LoginInfoExtractor<LoginInfoType>
@@ -21,9 +23,16 @@ where
     {
         let login_info = parts
             .extensions
-            .get::<Arc<LoginInfoType>>()
-            .map(|login_info| LoginInfoExtractor(login_info.clone()))
-            .ok_or(StatusCode::UNAUTHORIZED);
+            .get::<AccessTokenVerificationResultExtension<LoginInfoType>>()
+            .ok_or(StatusCode::UNAUTHORIZED)
+            .and_then(|access_token_verification_result_extension| {
+                Ok(LoginInfoExtractor(
+                    access_token_verification_result_extension
+                        .0
+                        .as_ref()?
+                        .clone(),
+                ))
+            });
 
         Box::pin(async move { login_info })
     }
