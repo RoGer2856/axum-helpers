@@ -3,24 +3,27 @@ use axum_extra::extract::CookieJar;
 use time::OffsetDateTime;
 use tokio::time::Duration;
 
-use super::auth_layer::{create_access_token_cookie, create_refresh_token_cookie};
+use super::{
+    auth_layer::{create_access_token_cookie, create_refresh_token_cookie},
+    AccessToken, RefreshToken,
+};
 
 #[derive(Debug, Clone)]
-pub struct AccessTokenResponse(pub(super) TokenResponse);
+pub struct AccessTokenResponse(pub(super) TokenResponse<AccessToken>);
 
 #[derive(Debug, Clone)]
-pub struct RefreshTokenResponse(pub(super) TokenResponse);
+pub struct RefreshTokenResponse(pub(super) TokenResponse<RefreshToken>);
 
 #[derive(Debug, Clone)]
-pub struct TokenResponse {
-    pub(super) token: String,
+pub struct TokenResponse<TokenType> {
+    pub(super) token: TokenType,
     pub(super) expires_at: OffsetDateTime,
     pub(super) path: String,
 }
 
-impl TokenResponse {
+impl<TokenType> TokenResponse<TokenType> {
     fn with_offset_date_time(
-        token: impl Into<String>,
+        token: impl Into<TokenType>,
         expires_at: OffsetDateTime,
         path: Option<impl Into<String>>,
     ) -> Self {
@@ -34,7 +37,7 @@ impl TokenResponse {
     }
 
     fn with_time_delta(
-        token: impl Into<String>,
+        token: impl Into<TokenType>,
         expiration_time_delta: Duration,
         path: Option<impl Into<String>>,
     ) -> Self {
@@ -48,7 +51,7 @@ impl TokenResponse {
 
 impl AccessTokenResponse {
     pub fn with_offset_date_time(
-        token: impl Into<String>,
+        token: impl Into<AccessToken>,
         expires_at: OffsetDateTime,
         path: Option<&str>,
     ) -> Self {
@@ -58,18 +61,18 @@ impl AccessTokenResponse {
     }
 
     pub fn with_time_delta(
-        token: impl Into<String>,
+        token: impl Into<AccessToken>,
         expiration_time_delta: Duration,
         path: Option<&str>,
     ) -> Self {
         Self(TokenResponse::with_time_delta(
-            token,
+            token.into(),
             expiration_time_delta,
             path,
         ))
     }
 
-    pub fn token(&self) -> &str {
+    pub fn token(&self) -> &AccessToken {
         &self.0.token
     }
 
@@ -102,7 +105,11 @@ impl IntoResponse for AccessTokenResponse {
 }
 
 impl RefreshTokenResponse {
-    pub fn with_offset_date_time(token: String, expires_at: OffsetDateTime, path: &str) -> Self {
+    pub fn with_offset_date_time(
+        token: impl Into<RefreshToken>,
+        expires_at: OffsetDateTime,
+        path: &str,
+    ) -> Self {
         Self(TokenResponse::with_offset_date_time(
             token,
             expires_at,
@@ -110,15 +117,19 @@ impl RefreshTokenResponse {
         ))
     }
 
-    pub fn with_time_delta(token: String, expiration_time_delta: Duration, path: &str) -> Self {
+    pub fn with_time_delta(
+        token: impl Into<RefreshToken>,
+        expiration_time_delta: Duration,
+        path: &str,
+    ) -> Self {
         Self(TokenResponse::with_time_delta(
-            token,
+            token.into(),
             expiration_time_delta,
             Some(path),
         ))
     }
 
-    pub fn token(&self) -> &str {
+    pub fn token(&self) -> &RefreshToken {
         &self.0.token
     }
 

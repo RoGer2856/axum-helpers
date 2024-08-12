@@ -11,8 +11,8 @@ use axum::{
 use crate::{
     app::{AxumApp, AxumAppState},
     auth::{
-        AccessTokenResponse, AuthHandler, AuthLayer, AuthLogoutResponse, LoginInfoExtractor,
-        RefreshTokenExtractor, RefreshTokenResponse,
+        AccessToken, AccessTokenResponse, AuthHandler, AuthLayer, AuthLogoutResponse,
+        LoginInfoExtractor, RefreshToken, RefreshTokenExtractor, RefreshTokenResponse,
     },
 };
 use parking_lot::Mutex;
@@ -20,12 +20,6 @@ use uuid::Uuid;
 
 const ACCESS_TOKEN_EXPIRATION_TIME_DURATION: Duration = Duration::from_secs(1);
 const REFRESH_TOKEN_EXPIRATION_TIME_DURATION: Duration = Duration::from_secs(24 * 60 * 60);
-
-#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-struct AccessToken(pub String);
-
-#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-struct RefreshToken(pub String);
 
 #[derive(Clone)]
 struct AppState {
@@ -46,8 +40,8 @@ impl AppState {
         loginname: impl Into<String>,
         _password: impl Into<String>,
     ) -> Option<(AccessTokenResponse, RefreshTokenResponse, LoginInfo)> {
-        let access_token = AccessToken(Uuid::new_v4().as_hyphenated().to_string());
-        let refresh_token = RefreshToken(Uuid::new_v4().as_hyphenated().to_string());
+        let access_token = AccessToken::new(Uuid::new_v4().as_hyphenated().to_string());
+        let refresh_token = RefreshToken::new(Uuid::new_v4().as_hyphenated().to_string());
 
         let loginname = loginname.into();
         let login_info = LoginInfo { loginname };
@@ -62,12 +56,12 @@ impl AppState {
 
         Some((
             AccessTokenResponse::with_time_delta(
-                access_token.0,
+                access_token,
                 ACCESS_TOKEN_EXPIRATION_TIME_DURATION,
                 None,
             ),
             RefreshTokenResponse::with_time_delta(
-                refresh_token.0,
+                refresh_token,
                 REFRESH_TOKEN_EXPIRATION_TIME_DURATION,
                 "/api/refresh-login",
             ),
@@ -75,8 +69,8 @@ impl AppState {
         ))
     }
 
-    fn refresh(&mut self, refresh_token: impl Into<String>) -> Option<AccessTokenResponse> {
-        let refresh_token = RefreshToken(refresh_token.into());
+    fn refresh(&mut self, refresh_token: impl Into<RefreshToken>) -> Option<AccessTokenResponse> {
+        let refresh_token = refresh_token.into();
 
         let access_token = self
             .access_tokens_by_refresh_token
@@ -85,27 +79,28 @@ impl AppState {
 
         let login_info = self.logins_by_access_token.lock().remove(&access_token)?;
 
-        let new_access_token = AccessToken(Uuid::new_v4().as_hyphenated().to_string());
+        let access_token_response = AccessTokenResponse::with_time_delta(
+            AccessToken::new(Uuid::new_v4().as_hyphenated().to_string()),
+            REFRESH_TOKEN_EXPIRATION_TIME_DURATION,
+            None,
+        );
+        let new_access_token = access_token_response.token().clone();
 
         self.logins_by_access_token
             .lock()
             .insert(new_access_token.clone(), login_info);
         self.access_tokens_by_refresh_token
             .lock()
-            .insert(refresh_token, new_access_token.clone());
+            .insert(refresh_token, new_access_token);
 
-        Some(AccessTokenResponse::with_time_delta(
-            new_access_token.0,
-            REFRESH_TOKEN_EXPIRATION_TIME_DURATION,
-            None,
-        ))
+        Some(access_token_response)
     }
 
-    fn logout(&mut self, refresh_token: impl AsRef<str>) {
+    fn logout(&mut self, refresh_token: &RefreshToken) {
         if let Some(access_token) = self
             .access_tokens_by_refresh_token
             .lock()
-            .remove(&RefreshToken(refresh_token.as_ref().into()))
+            .remove(refresh_token.as_ref())
         {
             if let Some(login_info) = self.logins_by_access_token.lock().remove(&access_token) {
                 log::info!("User logged out, loginname = '{}'", login_info.loginname);
@@ -114,33 +109,38 @@ impl AppState {
 
         log::info!(
             "Refresh token revoked, refresh_token = {}",
-            refresh_token.as_ref()
+            refresh_token as &String
         );
     }
 }
 
 #[async_trait]
 impl AuthHandler<LoginInfo> for AppState {
-    async fn verify_access_token(&mut self, access_token: &str) -> Result<LoginInfo, StatusCode> {
+    async fn verify_access_token(
+        &mut self,
+        access_token: &AccessToken,
+    ) -> Result<LoginInfo, StatusCode> {
         self.logins_by_access_token
             .lock()
-            .get(&AccessToken(access_token.into()))
+            .get(access_token)
             .cloned()
             .ok_or_else(|| StatusCode::BAD_REQUEST)
     }
 
     async fn update_access_token(
         &mut self,
-        access_token: &str,
+        access_token: &AccessToken,
         _login_info: &Arc<LoginInfo>,
-    ) -> Option<(String, Duration)> {
-        Some((access_token.into(), ACCESS_TOKEN_EXPIRATION_TIME_DURATION))
+    ) -> Option<(AccessToken, Duration)> {
+        Some((access_token.clone(), ACCESS_TOKEN_EXPIRATION_TIME_DURATION))
     }
 
-    async fn revoke_access_token(&mut self, access_token: &str, login_info: &Arc<LoginInfo>) {
-        self.logins_by_access_token
-            .lock()
-            .remove(&AccessToken(access_token.into()));
+    async fn revoke_access_token(
+        &mut self,
+        access_token: &AccessToken,
+        login_info: &Arc<LoginInfo>,
+    ) {
+        self.logins_by_access_token.lock().remove(access_token);
 
         log::info!(
             "Access token of user revoked, loginname = '{}'",
@@ -148,15 +148,18 @@ impl AuthHandler<LoginInfo> for AppState {
         );
     }
 
-    async fn verify_refresh_token(&mut self, refresh_token: &str) -> Result<(), StatusCode> {
+    async fn verify_refresh_token(
+        &mut self,
+        refresh_token: &RefreshToken,
+    ) -> Result<(), StatusCode> {
         self.access_tokens_by_refresh_token
             .lock()
-            .contains_key(&RefreshToken(refresh_token.into()))
+            .contains_key(refresh_token)
             .then_some(())
             .ok_or_else(|| StatusCode::BAD_REQUEST)
     }
 
-    async fn revoke_refresh_token(&mut self, refresh_token: &str) {
+    async fn revoke_refresh_token(&mut self, refresh_token: &RefreshToken) {
         self.logout(refresh_token);
     }
 }
@@ -252,7 +255,7 @@ async fn api_logout(
     RefreshTokenExtractor(refresh_token): RefreshTokenExtractor,
     State(mut state): State<AppState>,
 ) -> Result<AuthLogoutResponse, StatusCode> {
-    state.logout(refresh_token);
+    state.logout(&refresh_token);
     Ok(AuthLogoutResponse::new(Some("/"), Some("/")))
 }
 

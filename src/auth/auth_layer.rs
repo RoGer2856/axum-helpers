@@ -19,7 +19,10 @@ use http_body::Body;
 use time::OffsetDateTime;
 use tower::{Layer, Service};
 
-use super::{AuthHandler, AuthLogoutResponse};
+use super::{
+    auth_handler::{AccessToken, RefreshToken},
+    AuthHandler, AuthLogoutResponse,
+};
 
 const ACCESS_TOKEN_COOKIE_NAME: &str = "access_token";
 const REFRESH_TOKEN_COOKIE_NAME: &str = "refresh_token";
@@ -38,7 +41,7 @@ impl<LoginInfoType: Send + Sync + 'static> Clone
 
 #[derive(Clone)]
 pub(super) struct RefreshTokenVerificationResultExtension(
-    pub(super) (String, Result<(), StatusCode>),
+    pub(super) (RefreshToken, Result<(), StatusCode>),
 );
 
 #[derive(Clone)]
@@ -157,48 +160,50 @@ where
         let mut auth_impl = self.auth_impl.clone();
         let mut inner = self.inner.clone();
         Box::pin(async move {
-            let mut access_token_login_result_pair = None;
-            let mut refresh_token = None;
+            let mut received_access_token_login_result_pair = None;
+            let mut received_refresh_token = None;
             let cookie_jar = CookieJar::from_headers(req.headers());
             for cookie in cookie_jar.iter() {
                 if cookie.name() == ACCESS_TOKEN_COOKIE_NAME && !is_cookie_expired_by_date(cookie) {
-                    let replace = match &access_token_login_result_pair {
+                    let replace = match &received_access_token_login_result_pair {
                         Some((_access_token, Ok(_login_info))) => false,
                         Some((_access_token, Err(_))) => true,
                         None => true,
                     };
 
                     if replace {
-                        let access_token = cookie.value().to_string();
+                        let access_token = AccessToken(cookie.value().to_string());
                         let verification_result = auth_impl
                             .verify_access_token(&access_token)
                             .await
                             .map(|login_info| Arc::new(login_info));
-                        access_token_login_result_pair = Some((access_token, verification_result))
+                        received_access_token_login_result_pair =
+                            Some((access_token, verification_result))
                     }
                 } else if cookie.name() == REFRESH_TOKEN_COOKIE_NAME
                     && !is_cookie_expired_by_date(cookie)
                 {
-                    let replace = match &refresh_token {
+                    let replace = match &received_refresh_token {
                         Some((_refresh_token, Ok(()))) => false,
                         Some((_refresh_token, Err(_))) => true,
                         None => true,
                     };
 
                     if replace {
-                        let rt = cookie.value().to_string();
-                        let verification_result = auth_impl.verify_refresh_token(&rt).await;
-                        refresh_token = Some((rt, verification_result));
+                        let refresh_token = RefreshToken(cookie.value().to_string());
+                        let verification_result =
+                            auth_impl.verify_refresh_token(&refresh_token).await;
+                        received_refresh_token = Some((refresh_token, verification_result));
                     }
                 }
             }
 
-            if let Some((_at, login_result)) = &access_token_login_result_pair {
+            if let Some((_at, login_result)) = &received_access_token_login_result_pair {
                 req.extensions_mut()
                     .insert(AccessTokenVerificationResultExtension(login_result.clone()));
             }
 
-            if let Some(refresh_token) = &refresh_token {
+            if let Some(refresh_token) = &received_refresh_token {
                 req.extensions_mut()
                     .insert(RefreshTokenVerificationResultExtension(
                         refresh_token.clone(),
@@ -217,14 +222,14 @@ where
                         response.extensions_mut().remove::<AuthLogoutExtension>()
                     {
                         if let Some((access_token, Ok(login_info))) =
-                            &access_token_login_result_pair
+                            &received_access_token_login_result_pair
                         {
                             auth_impl
                                 .revoke_access_token(access_token, login_info)
                                 .await;
                         }
 
-                        if let Some((refresh_token, Ok(()))) = &refresh_token {
+                        if let Some((refresh_token, Ok(()))) = &received_refresh_token {
                             auth_impl.revoke_refresh_token(refresh_token).await;
                         }
 
@@ -250,7 +255,7 @@ where
 
                         cookie_jar
                     } else if let Some((access_token, Ok(login_info))) =
-                        &access_token_login_result_pair
+                        &received_access_token_login_result_pair
                     {
                         if let Some((access_token, expiration_time_delta)) = auth_impl
                             .update_access_token(access_token, login_info)

@@ -11,7 +11,10 @@ use axum::{
 
 use crate::{
     app::{AxumApp, AxumAppState},
-    auth::{AccessTokenResponse, AuthHandler, AuthLayer, AuthLogoutResponse, LoginInfoExtractor},
+    auth::{
+        AccessToken, AccessTokenResponse, AuthHandler, AuthLayer, AuthLogoutResponse,
+        LoginInfoExtractor, RefreshToken,
+    },
 };
 use parking_lot::Mutex;
 use uuid::Uuid;
@@ -22,9 +25,6 @@ const ACCESS_TOKEN_EXPIRATION_TIME_DURATION: Duration = Duration::from_secs(5 * 
 struct AppState {
     logins: Arc<Mutex<BTreeMap<AccessToken, LoginInfo>>>,
 }
-
-#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-struct AccessToken(pub String);
 
 impl AppState {
     fn new() -> Self {
@@ -38,11 +38,6 @@ impl AppState {
         loginname: impl Into<String>,
         _password: impl Into<String>,
     ) -> Option<(AccessTokenResponse, LoginInfo)> {
-        let access_token_response = AccessTokenResponse::with_time_delta(
-            Uuid::new_v4().as_hyphenated().to_string(),
-            ACCESS_TOKEN_EXPIRATION_TIME_DURATION,
-            None,
-        );
         let loginname = loginname.into();
 
         let role = match loginname.as_str() {
@@ -53,16 +48,21 @@ impl AppState {
 
         let login_info = LoginInfo { loginname, role };
 
-        self.logins.lock().insert(
-            AccessToken(access_token_response.token().into()),
-            login_info.clone(),
+        let access_token_response = AccessTokenResponse::with_time_delta(
+            AccessToken::new(Uuid::new_v4().as_hyphenated().to_string()),
+            ACCESS_TOKEN_EXPIRATION_TIME_DURATION,
+            None,
         );
+
+        self.logins
+            .lock()
+            .insert(access_token_response.token().clone(), login_info.clone());
 
         Some((access_token_response, login_info))
     }
 
-    fn logout(&mut self, access_token: impl Into<String>, login_info: &Arc<LoginInfo>) {
-        self.logins.lock().remove(&AccessToken(access_token.into()));
+    fn logout(&mut self, access_token: &AccessToken, login_info: &Arc<LoginInfo>) {
+        self.logins.lock().remove(access_token);
 
         log::info!("User logged out, loginname = '{}'", login_info.loginname);
     }
@@ -70,31 +70,41 @@ impl AppState {
 
 #[async_trait]
 impl AuthHandler<LoginInfo> for AppState {
-    async fn verify_access_token(&mut self, access_token: &str) -> Result<LoginInfo, StatusCode> {
+    async fn verify_access_token(
+        &mut self,
+        access_token: &AccessToken,
+    ) -> Result<LoginInfo, StatusCode> {
         self.logins
             .lock()
-            .get(&AccessToken(access_token.into()))
+            .get(access_token)
             .cloned()
             .ok_or_else(|| StatusCode::BAD_REQUEST)
     }
 
     async fn update_access_token(
         &mut self,
-        access_token: &str,
+        access_token: &AccessToken,
         _login_info: &Arc<LoginInfo>,
-    ) -> Option<(String, Duration)> {
-        Some((access_token.into(), ACCESS_TOKEN_EXPIRATION_TIME_DURATION))
+    ) -> Option<(AccessToken, Duration)> {
+        Some((access_token.clone(), ACCESS_TOKEN_EXPIRATION_TIME_DURATION))
     }
 
-    async fn revoke_access_token(&mut self, access_token: &str, login_info: &Arc<LoginInfo>) {
+    async fn revoke_access_token(
+        &mut self,
+        access_token: &AccessToken,
+        login_info: &Arc<LoginInfo>,
+    ) {
         self.logout(access_token, login_info);
     }
 
-    async fn verify_refresh_token(&mut self, _refresh_token: &str) -> Result<(), StatusCode> {
+    async fn verify_refresh_token(
+        &mut self,
+        _refresh_token: &RefreshToken,
+    ) -> Result<(), StatusCode> {
         unreachable!("tests contained in this file, this line should not be called")
     }
 
-    async fn revoke_refresh_token(&mut self, _refresh_token: &str) {
+    async fn revoke_refresh_token(&mut self, _refresh_token: &RefreshToken) {
         unreachable!("tests contained in this file, this line should not be called")
     }
 }

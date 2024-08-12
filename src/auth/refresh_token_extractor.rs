@@ -2,9 +2,9 @@ use std::{future::Future, pin::Pin};
 
 use axum::{extract::FromRequestParts, http::StatusCode};
 
-use super::auth_layer::RefreshTokenVerificationResultExtension;
+use super::{auth_layer::RefreshTokenVerificationResultExtension, RefreshToken};
 
-pub struct RefreshTokenExtractor(pub String);
+pub struct RefreshTokenExtractor(pub RefreshToken);
 
 impl<StateType> FromRequestParts<StateType> for RefreshTokenExtractor {
     type Rejection = StatusCode;
