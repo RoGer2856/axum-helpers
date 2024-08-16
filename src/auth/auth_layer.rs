@@ -21,7 +21,7 @@ use tower::{Layer, Service};
 
 use super::{
     auth_handler::{AccessToken, RefreshToken},
-    AuthHandler, AuthLogoutResponse,
+    AccessTokenResponse, AuthHandler, AuthLogoutResponse, RefreshTokenResponse,
 };
 
 const ACCESS_TOKEN_COOKIE_NAME: &str = "access_token";
@@ -218,6 +218,30 @@ where
 
                     let cookie_jar = CookieJar::new();
 
+                    let access_token_response =
+                        response.extensions_mut().remove::<AccessTokenResponse>();
+                    let cookie_jar = if let Some(access_token_response) = &access_token_response {
+                        cookie_jar.add(create_access_token_cookie(
+                            access_token_response.token().to_string(),
+                            *access_token_response.expires_at(),
+                            access_token_response.path(),
+                        ))
+                    } else {
+                        cookie_jar
+                    };
+
+                    let refresh_token_response =
+                        response.extensions_mut().remove::<RefreshTokenResponse>();
+                    let cookie_jar = if let Some(refresh_token_response) = &refresh_token_response {
+                        cookie_jar.add(create_refresh_token_cookie(
+                            refresh_token_response.token().to_string(),
+                            *refresh_token_response.expires_at(),
+                            refresh_token_response.path(),
+                        ))
+                    } else {
+                        cookie_jar
+                    };
+
                     let cookie_jar = if let Some(auth_logout_extension) =
                         response.extensions_mut().remove::<AuthLogoutExtension>()
                     {
@@ -257,15 +281,19 @@ where
                     } else if let Some((access_token, Ok(login_info))) =
                         &received_access_token_login_result_pair
                     {
-                        if let Some((access_token, expiration_time_delta)) = auth_impl
-                            .update_access_token(access_token, login_info)
-                            .await
-                        {
-                            cookie_jar.add(create_access_token_cookie(
-                                access_token,
-                                time::OffsetDateTime::now_utc() + expiration_time_delta,
-                                "/",
-                            ))
+                        if access_token_response.is_none() {
+                            if let Some((access_token, expiration_time_delta)) = auth_impl
+                                .update_access_token(access_token, login_info)
+                                .await
+                            {
+                                cookie_jar.add(create_access_token_cookie(
+                                    access_token,
+                                    time::OffsetDateTime::now_utc() + expiration_time_delta,
+                                    "/",
+                                ))
+                            } else {
+                                cookie_jar
+                            }
                         } else {
                             cookie_jar
                         }
