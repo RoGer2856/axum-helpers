@@ -107,14 +107,14 @@ impl<LoginInfoType: Send + Sync + 'static, AuthHandlerType: AuthHandler<LoginInf
 }
 
 impl<
-        ServiceType,
+        InnerServiceType,
         LoginInfoType: Send + Sync + 'static,
         AuthHandlerType: AuthHandler<LoginInfoType>,
-    > Layer<ServiceType> for AuthLayer<LoginInfoType, AuthHandlerType>
+    > Layer<InnerServiceType> for AuthLayer<LoginInfoType, AuthHandlerType>
 {
-    type Service = AuthMiddleware<ServiceType, LoginInfoType, AuthHandlerType>;
+    type Service = AuthMiddleware<InnerServiceType, LoginInfoType, AuthHandlerType>;
 
-    fn layer(&self, inner: ServiceType) -> Self::Service {
+    fn layer(&self, inner: InnerServiceType) -> Self::Service {
         AuthMiddleware {
             _marker: PhantomData,
 
@@ -126,31 +126,32 @@ impl<
 
 #[derive(Clone)]
 pub struct AuthMiddleware<
-    ServiceType,
+    InnerServiceType,
     LoginInfoType: Send + Sync + 'static,
     AuthHandlerType: AuthHandler<LoginInfoType>,
 > {
     _marker: PhantomData<LoginInfoType>,
 
-    inner: ServiceType,
+    inner: InnerServiceType,
     auth_impl: AuthHandlerType,
 }
 
-impl<ServiceType, RequestBodyType, ResponseType, LoginInfoType, AuthHandlerType>
+impl<InnerServiceType, RequestBodyType, InnerResponseType, LoginInfoType, AuthHandlerType>
     Service<Request<RequestBodyType>>
-    for AuthMiddleware<ServiceType, LoginInfoType, AuthHandlerType>
+    for AuthMiddleware<InnerServiceType, LoginInfoType, AuthHandlerType>
 where
     LoginInfoType: Send + Sync + 'static,
     AuthHandlerType: AuthHandler<LoginInfoType>,
-    ServiceType: Service<Request<RequestBodyType>> + Clone + Send + 'static,
-    ServiceType::Future: Future<Output = Result<ResponseType, ServiceType::Error>> + Send,
-    ServiceType::Error: Send,
-    ResponseType: IntoResponse + Send,
+    InnerServiceType: Service<Request<RequestBodyType>> + Clone + Send + 'static,
+    InnerServiceType::Future:
+        Future<Output = Result<InnerResponseType, InnerServiceType::Error>> + Send,
+    InnerServiceType::Error: Send,
+    InnerResponseType: IntoResponse + Send,
     RequestBodyType: Body + Send + 'static,
 {
     type Response = Response;
-    type Error = ServiceType::Error;
-    type Future = Pin<Box<dyn Future<Output = Result<Response, ServiceType::Error>> + Send>>;
+    type Error = InnerServiceType::Error;
+    type Future = Pin<Box<dyn Future<Output = Result<Response, InnerServiceType::Error>> + Send>>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.inner.poll_ready(cx)
