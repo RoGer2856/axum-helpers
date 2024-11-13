@@ -8,28 +8,18 @@ pub enum RunServerError {
     TcpBind(std::io::Error),
 }
 
-pub trait AxumAppState: Clone {
-    fn routes(&self) -> Router;
-}
-
-pub struct AxumApp<StateType>
-where
-    StateType: AxumAppState,
-{
-    state: StateType,
+pub struct AxumApp {
+    router: Router,
 
     should_run_sender: watch::Sender<bool>,
     joinhandles: Vec<JoinHandle<()>>,
 }
 
-impl<StateType> AxumApp<StateType>
-where
-    StateType: AxumAppState,
-{
-    pub fn new(state: StateType) -> Self {
+impl AxumApp {
+    pub fn new(router: Router) -> Self {
         let (should_run_sender, _receiver) = watch::channel(true);
         Self {
-            state,
+            router,
 
             should_run_sender,
             joinhandles: Vec::new(),
@@ -44,16 +34,16 @@ where
     pub fn spawn_test_server(&self) -> Result<axum_test::TestServer, Box<dyn ::std::error::Error>> {
         use axum_test::TestServer;
 
-        let app = self.state.routes();
+        let router = self.router.clone();
 
-        Ok(TestServer::new(app.into_make_service())?)
+        Ok(TestServer::new(router.into_make_service())?)
     }
 
     pub async fn spawn_server(
         &mut self,
         listener_address: SocketAddr,
     ) -> Result<(), RunServerError> {
-        let app = self.state.routes();
+        let router = self.router.clone();
 
         let mut should_run_receiver = self.should_run_sender.subscribe();
 
@@ -63,7 +53,7 @@ where
             .map_err(RunServerError::TcpBind)?;
 
         let joinhandle = tokio::spawn(async move {
-            let _ = axum::serve(listener, app.into_make_service())
+            let _ = axum::serve(listener, router.into_make_service())
                 .with_graceful_shutdown(async move {
                     while should_run_receiver.changed().await.is_ok() {
                         if !*should_run_receiver.borrow() {
@@ -89,10 +79,7 @@ where
     }
 }
 
-impl<StateType> Drop for AxumApp<StateType>
-where
-    StateType: AxumAppState,
-{
+impl Drop for AxumApp {
     fn drop(&mut self) {
         self.stop_server();
     }

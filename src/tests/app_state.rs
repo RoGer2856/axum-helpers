@@ -1,16 +1,12 @@
 use axum::{routing::get, Router};
 
-use crate::app::{AxumApp, AxumAppState};
+use crate::app::AxumApp;
 
 #[derive(Clone)]
 struct AppState;
 
-impl AxumAppState for AppState {
-    fn routes(&self) -> Router {
-        Router::new()
-            .route("/", get(get_index))
-            .with_state(self.clone())
-    }
+fn routes(state: AppState) -> Router {
+    Router::new().route("/", get(get_index)).with_state(state)
 }
 
 async fn get_index() -> &'static str {
@@ -19,7 +15,7 @@ async fn get_index() -> &'static str {
 
 #[tokio::test]
 async fn get_index_page() {
-    let app = AxumApp::new(AppState);
+    let app = AxumApp::new(routes(AppState));
     let server = app.spawn_test_server().unwrap();
 
     let response = server.get("/").await;

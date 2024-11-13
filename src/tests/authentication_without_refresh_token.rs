@@ -9,7 +9,7 @@ use axum::{
 };
 
 use crate::{
-    app::{AxumApp, AxumAppState},
+    app::AxumApp,
     auth::{
         AccessToken, AccessTokenResponse, AuthHandler, AuthLayer, AuthLogoutResponse,
         LoginInfoExtractor, RefreshToken,
@@ -102,17 +102,15 @@ impl AuthHandler<LoginInfo> for AppState {
     }
 }
 
-impl AxumAppState for AppState {
-    fn routes(&self) -> Router {
-        Router::new()
-            .route("/public", get(get_public))
-            .route("/private", get(get_private))
-            .route("/hybrid", get(get_hybrid))
-            .route("/api/login", post(api_login))
-            .route("/api/logout", post(api_logout))
-            .route_layer(AuthLayer::new(self.clone()))
-            .with_state(self.clone())
-    }
+fn routes(state: AppState) -> Router {
+    Router::new()
+        .route("/public", get(get_public))
+        .route("/private", get(get_private))
+        .route("/hybrid", get(get_hybrid))
+        .route("/api/login", post(api_login))
+        .route("/api/logout", post(api_logout))
+        .route_layer(AuthLayer::new(state.clone()))
+        .with_state(state)
 }
 
 async fn get_public() -> &'static str {
@@ -176,7 +174,7 @@ async fn api_logout(
 
 #[tokio::test]
 async fn get_public_page() {
-    let app = AxumApp::new(AppState::new());
+    let app = AxumApp::new(routes(AppState::new()));
     let server = app.spawn_test_server().unwrap();
 
     let response = server.get("/public").await;
@@ -186,7 +184,7 @@ async fn get_public_page() {
 
 #[tokio::test]
 async fn get_private_page_unauthenticated() {
-    let app = AxumApp::new(AppState::new());
+    let app = AxumApp::new(routes(AppState::new()));
     let server = app.spawn_test_server().unwrap();
 
     let response = server.get("/private").await;
@@ -195,7 +193,7 @@ async fn get_private_page_unauthenticated() {
 
 #[tokio::test]
 async fn get_private_page_authenticated() {
-    let app = AxumApp::new(AppState::new());
+    let app = AxumApp::new(routes(AppState::new()));
     let mut server = app.spawn_test_server().unwrap();
     server.do_save_cookies();
 
@@ -213,7 +211,7 @@ async fn get_private_page_authenticated() {
 
 #[tokio::test]
 async fn get_hybrid_page_unauthenticated() {
-    let app = AxumApp::new(AppState::new());
+    let app = AxumApp::new(routes(AppState::new()));
     let server = app.spawn_test_server().unwrap();
 
     let response = server.get("/hybrid").await;
@@ -223,7 +221,7 @@ async fn get_hybrid_page_unauthenticated() {
 
 #[tokio::test]
 async fn get_hybrid_page_authenticated() {
-    let app = AxumApp::new(AppState::new());
+    let app = AxumApp::new(routes(AppState::new()));
     let mut server = app.spawn_test_server().unwrap();
     server.do_save_cookies();
 
@@ -242,7 +240,7 @@ async fn get_hybrid_page_authenticated() {
 
 #[tokio::test]
 async fn expired_access_token() {
-    let app = AxumApp::new(AppState::new());
+    let app = AxumApp::new(routes(AppState::new()));
     let mut server = app.spawn_test_server().unwrap();
     server.do_save_cookies();
 
@@ -266,7 +264,7 @@ async fn expired_access_token() {
 
 #[tokio::test]
 async fn login_then_logout() {
-    let app = AxumApp::new(AppState::new());
+    let app = AxumApp::new(routes(AppState::new()));
     let mut server = app.spawn_test_server().unwrap();
     server.do_save_cookies();
 

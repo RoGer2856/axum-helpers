@@ -10,7 +10,7 @@ use axum::{
 };
 
 use crate::{
-    app::{AxumApp, AxumAppState},
+    app::AxumApp,
     auth::{
         AccessToken, AccessTokenResponse, AuthHandler, AuthLayer, AuthLogoutResponse,
         LoginInfoExtractor, RefreshToken,
@@ -109,15 +109,13 @@ impl AuthHandler<LoginInfo> for AppState {
     }
 }
 
-impl AxumAppState for AppState {
-    fn routes(&self) -> Router {
-        Router::new()
-            .route("/admin-page", get(get_admin_page))
-            .route("/api/login", post(api_login))
-            .route("/api/logout", post(api_logout))
-            .route_layer(AuthLayer::new(self.clone()))
-            .with_state(self.clone())
-    }
+fn routes(state: AppState) -> Router {
+    Router::new()
+        .route("/admin-page", get(get_admin_page))
+        .route("/api/login", post(api_login))
+        .route("/api/logout", post(api_logout))
+        .route_layer(AuthLayer::new(state.clone()))
+        .with_state(state)
 }
 
 async fn check_required_role<FutureType: Future<Output = impl IntoResponse>>(
@@ -181,7 +179,7 @@ async fn api_logout(
 
 #[tokio::test]
 async fn get_page_with_access_policy() {
-    let app = AxumApp::new(AppState::new());
+    let app = AxumApp::new(routes(AppState::new()));
     let mut server = app.spawn_test_server().unwrap();
     server.do_save_cookies();
 
@@ -200,7 +198,7 @@ async fn get_page_with_access_policy() {
 
 #[tokio::test]
 async fn get_page_with_incorrect_access_policy() {
-    let app = AxumApp::new(AppState::new());
+    let app = AxumApp::new(routes(AppState::new()));
     let mut server = app.spawn_test_server().unwrap();
     server.do_save_cookies();
 

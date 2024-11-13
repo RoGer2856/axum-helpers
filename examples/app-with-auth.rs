@@ -9,7 +9,7 @@ use axum::{
     Json, Router,
 };
 use axum_helpers::{
-    app::{AxumApp, AxumAppState},
+    app::AxumApp,
     auth::{
         AccessToken, AccessTokenResponse, AuthHandler, AuthLayer, AuthLogoutResponse,
         LoginInfoExtractor, RefreshToken,
@@ -29,7 +29,7 @@ pub struct Cli {
     #[arg(
         short('l'),
         long("listener-address"),
-        help("Address where the server accepts the connections (e.g., 127.0.0.1)")
+        help("Address where the server accepts the connections (e.g., 127.0.0.1:8080)")
     )]
     listener_address: String,
 }
@@ -120,17 +120,15 @@ impl AuthHandler<LoginInfo> for AppState {
     async fn revoke_refresh_token(&mut self, _refresh_token: &RefreshToken) {}
 }
 
-impl AxumAppState for AppState {
-    fn routes(&self) -> Router {
-        Router::new()
-            .route("/", get(index_page))
-            .route("/login", get(login_page))
-            .route("/api/login", post(api_login))
-            .route("/api/logout", post(api_logout))
-            .route("/api/logged-in-users", get(api_get_logged_in_users))
-            .route_layer(AuthLayer::new(self.clone()))
-            .with_state(self.clone())
-    }
+fn routes(state: AppState) -> Router {
+    Router::new()
+        .route("/", get(index_page))
+        .route("/login", get(login_page))
+        .route("/api/login", post(api_login))
+        .route("/api/logout", post(api_logout))
+        .route("/api/logged-in-users", get(api_get_logged_in_users))
+        .route_layer(AuthLayer::new(state.clone()))
+        .with_state(state)
 }
 
 async fn check_required_role<FutureType: Future<Output = impl IntoResponse>>(
@@ -312,9 +310,11 @@ async fn main() {
 
     let cli = Cli::parse();
 
-    let mut app = AxumApp::new(AppState::new());
+    let mut app = AxumApp::new(routes(AppState::new()));
     for addr in cli.listener_address.to_socket_addrs().unwrap() {
-        let _ = app.spawn_server(addr).await;
+        if let Err(e) = app.spawn_server(addr).await {
+            log::error!("Could not start server, error = {e:?}");
+        }
     }
 
     app.join().await;
